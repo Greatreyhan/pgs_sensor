@@ -3,6 +3,8 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <DHT.h>
+#include <Wire.h>
+#include <BH1750.h>
 
 // Define NTP Client to get time
 WiFiUDP ntpUDP;
@@ -38,12 +40,13 @@ FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-#define DHTPIN D6
+#define DHTPIN D5
 #define SOIL_SENSOR A0
-#define LDR_SENSOR D5
 #define DHTTYPE DHT22
 
 DHT dht(DHTPIN, DHTTYPE);
+
+BH1750 lightMeter;
 
 unsigned long sendDataPrevMillis = 0;
 unsigned long previousMillis = 0;
@@ -89,7 +92,8 @@ void setup()
   timeClient.setTimeOffset(25200);
 
   dht.begin();
-  pinMode(LDR_SENSOR, INPUT);
+  Wire.begin();
+  lightMeter.begin();
 }
 
 void loop()
@@ -111,7 +115,9 @@ void loop()
   if (isnan(temperature))
     temperature = 0;
   int soil = map(analogRead(SOIL_SENSOR), 1023, 0, 0, 100);
-  int ldr = map(analogRead(LDR_SENSOR), 1023, 0, 0, 100);
+  int ldr = lightMeter.readLightLevel();
+  if (isnan(ldr))
+    ldr = 0;
   String paramAll = (((int)temperature < 100) ? "0" + String((int)temperature) : ((int)temperature < 10) ? "00" + String((int)temperature)
                                                                                                          : String((int)temperature)) +
                     (((int)humidity < 100) ? "0" + String((int)humidity) : ((int)humidity < 10) ? "00" + String((int)humidity)
@@ -125,7 +131,7 @@ void loop()
 
     if (Firebase.ready())
     {
-      if (Firebase.setInt(fbdo, "/data/1/humidity/" + currentDate, humidity))
+      if (Firebase.setInt(fbdo, "/data/2/humidity/" + currentDate, humidity))
       {
 
         Serial.println(fbdo.dataPath());
@@ -138,7 +144,7 @@ void loop()
       {
         Serial.println(fbdo.errorReason());
       }
-      if (Firebase.setInt(fbdo, "/data/1/temperature/" + currentDate, temperature))
+      if (Firebase.setInt(fbdo, "/data/2/temperature/" + currentDate, temperature))
       {
 
         Serial.println(fbdo.dataPath());
@@ -151,7 +157,7 @@ void loop()
       {
         Serial.println(fbdo.errorReason());
       }
-      if (Firebase.setInt(fbdo, "/data/1/soil/" + currentDate, soil))
+      if (Firebase.setInt(fbdo, "/data/2/soil/" + currentDate, soil))
       {
 
         Serial.println(fbdo.dataPath());
@@ -165,7 +171,7 @@ void loop()
         Serial.println(fbdo.errorReason());
       }
 
-      if (Firebase.setInt(fbdo, "/data/1/light/" + currentDate, ldr))
+      if (Firebase.setInt(fbdo, "/data/2/light/" + currentDate, ldr))
       {
 
         Serial.println(fbdo.dataPath());
@@ -182,7 +188,7 @@ void loop()
   }
   if (Firebase.ready())
   {
-    if (Firebase.setString(fbdo, "/param/1", paramAll))
+    if (Firebase.setString(fbdo, "/param/2", paramAll))
     {
       Serial.println("T : " + String(temperature) + " | H: " + String(humidity) + " | S: " + String(soil) + " | L: " + String(ldr));
       Serial.println(fbdo.dataPath());
