@@ -6,200 +6,159 @@
 #include <Wire.h>
 #include <BH1750.h>
 
-// Define NTP Client to get time
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org");
-
-// Provide the token generation process info.
-#include "addons/TokenHelper.h"
-// Provide the RTDB payload printing info and other helper functions.
-#include "addons/RTDBHelper.h"
-
 // WiFi
-const char *ssid = "infinergy";     // Enter your WiFi name
-const char *password = "okeokeoke"; // Enter WiFi password
-
-WiFiClient espClient;
-
-/* 1. Define the WiFi credentials */
 #define WIFI_SSID "infinergy"
 #define WIFI_PASSWORD "okeokeoke"
 
-/* 2. Define the API Key */
+// Firebase
 #define API_KEY "AIzaSyAj1WuRBgli6srEqC2Itd71H_xAptILN0o"
-
-/* 3. Define the RTDB URL */
 #define DATABASE_URL "pitrogreensystem-default-rtdb.firebaseio.com"
-
-/* 4. Define the user Email and password that alreadey registerd or added in your project */
 #define USER_EMAIL "pgsadmin@gmail.com"
 #define USER_PASSWORD "Admin123"
 
-// Define Firebase Data object
+// Firebase Data object
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-#define DHTPIN D5
-#define SOIL_SENSOR A0
-#define DHTTYPE DHT22
+// NTP Client
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 25200);
 
+// DHT Sensor
+#define DHTPIN D5
+#define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
 
+// BH1750 Sensor
 BH1750 lightMeter;
 
-unsigned long sendDataPrevMillis = 0;
-unsigned long previousMillis = 0;
+// Soil sensor
+#define SOIL_SENSOR A0
+
+// Timing
 const long interval = 60000;
+unsigned long previousMillis = 0;
 
-int count = 0;
+// Task Handles
+TaskHandle_t SensorTaskHandle;
+TaskHandle_t FirebaseTaskHandle;
 
-void setup()
-{
+float temperature, humidity;
+int soil, ldr;
+String currentDate;
 
-  Serial.begin(115200);
-
+// WiFi connection
+void connectWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to Wi-Fi");
-  while (WiFi.status() != WL_CONNECTED)
-  {
+  while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     delay(300);
   }
-  Serial.println();
-  Serial.print("Connected with IP: ");
+  Serial.println("\nConnected to Wi-Fi");
+  Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
-  Serial.println();
+}
 
-  Serial.printf("Firebase Client v%s\n\n", FIREBASE_CLIENT_VERSION);
-
-  /* Assign the api key (required) */
+// Firebase initialization
+void initFirebase() {
   config.api_key = API_KEY;
-
-  /* Assign the user sign in credentials */
   auth.user.email = USER_EMAIL;
   auth.user.password = USER_PASSWORD;
-
-  /* Assign the RTDB URL (required) */
   config.database_url = DATABASE_URL;
-
-  /* Assign the callback function for the long running token generation task */
   config.token_status_callback = tokenStatusCallback;
-
   Firebase.begin(&config, &auth);
+  Serial.printf("Firebase Client v%s\n\n", FIREBASE_CLIENT_VERSION);
+}
+
+// Sensor reading task
+void SensorTask(void *parameter) {
+  for (;;) {
+    // Time update
+    timeClient.update();
+    time_t epochTime = timeClient.getEpochTime();
+    struct tm *ptm = gmtime((time_t *)&epochTime);
+    int hoursNow = ptm->tm_hour;
+    int monthDay = ptm->tm_mday;
+    int currentMonth = ptm->tm_mon + 1;
+    int currentYear = ptm->tm_year + 1900;
+    currentDate = String(currentYear) + "/" + String(currentMonth) + "/" + String(monthDay) + "/" + String(hoursNow);
+
+    // Sensor readings
+    humidity = dht.readHumidity();
+    if (isnan(humidity)) humidity = 0;
+
+    temperature = dht.readTemperature();
+    if (isnan(temperature)) temperature = 0;
+
+    soil = map(analogRead(SOIL_SENSOR), 1023, 0, 0, 100);
+
+    ldr = lightMeter.readLightLevel();
+    if (isnan(ldr)) ldr = 0;
+
+    vTaskDelay(pdMS_TO_TICKS(1000)); /
+  }
+}
+
+// Firebase task
+void FirebaseTask(void *parameter) {
+  for (;;) {
+    unsigned long currentMillis = millis();
+    if (Firebase.ready() && currentMillis - previousMillis >= interval) {
+      previousMillis = currentMillis;
+
+      // Upload sensor data
+      if (Firebase.setInt(fbdo, "/data/2/humidity/" + currentDate, humidity)) {
+        Serial.println("Humidity uploaded: " + String(humidity));
+      } else {
+        Serial.println("Error: " + fbdo.errorReason());
+      }
+
+      if (Firebase.setInt(fbdo, "/data/2/temperature/" + currentDate, temperature)) {
+        Serial.println("Temperature uploaded: " + String(temperature));
+      } else {
+        Serial.println("Error: " + fbdo.errorReason());
+      }
+
+      if (Firebase.setInt(fbdo, "/data/2/soil/" + currentDate, soil)) {
+        Serial.println("Soil uploaded: " + String(soil));
+      } else {
+        Serial.println("Error: " + fbdo.errorReason());
+      }
+
+      if (Firebase.setInt(fbdo, "/data/2/light/" + currentDate, ldr)) {
+        Serial.println("Light uploaded: " + String(ldr));
+      } else {
+        Serial.println("Error: " + fbdo.errorReason());
+      }
+
+      String paramAll = String(temperature) + String(humidity) + String(soil) + String(ldr);
+      if (Firebase.setString(fbdo, "/param/2", paramAll)) {
+        Serial.println("Parameters uploaded: " + paramAll);
+      } else {
+        Serial.println("Error: " + fbdo.errorReason());
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(5000)); 
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  connectWiFi();
+  initFirebase();
 
   timeClient.begin();
-  timeClient.setTimeOffset(25200);
-
   dht.begin();
   Wire.begin();
   lightMeter.begin();
+
+  // FreeRTOS tasks
+  xTaskCreate(SensorTask, "Sensor Task", 2048, NULL, 1, &SensorTaskHandle);
+  xTaskCreate(FirebaseTask, "Firebase Task", 4096, NULL, 1, &FirebaseTaskHandle);
 }
 
-void loop()
-{
-  // For Timing-----------------------------
-  timeClient.update();
-  time_t epochTime = timeClient.getEpochTime();
-  struct tm *ptm = gmtime((time_t *)&epochTime);
-  int hoursNow = ptm->tm_hour;
-  int monthDay = ptm->tm_mday;
-  int currentMonth = ptm->tm_mon + 1;
-  int currentYear = ptm->tm_year + 1900;
-  String currentDate = String(currentYear) + "/" + String(currentMonth) + "/" + String(monthDay) + "/" + String(hoursNow);
-  unsigned long currentMillis = millis();
-  float humidity = dht.readHumidity();
-  if (isnan(humidity))
-    humidity = 0;
-  float temperature = dht.readTemperature();
-  if (isnan(temperature))
-    temperature = 0;
-  int soil = map(analogRead(SOIL_SENSOR), 1023, 0, 0, 100);
-  int ldr = lightMeter.readLightLevel();
-  if (isnan(ldr))
-    ldr = 0;
-  String paramAll = (((int)temperature < 100) ? "0" + String((int)temperature) : ((int)temperature < 10) ? "00" + String((int)temperature)
-                                                                                                         : String((int)temperature)) +
-                    (((int)humidity < 100) ? "0" + String((int)humidity) : ((int)humidity < 10) ? "00" + String((int)humidity)
-                                                                                                : String((int)humidity)) +
-                    (((int)soil < 10) ? "00" + String((int)soil) : String((int)soil)) + (((int)ldr < 100) ? "0" + String((int)ldr) : ((int)ldr < 10) ? "00" + String((int)ldr)
-                                                                                                                                                     : String((int)ldr));
-
-  if (currentMillis - previousMillis >= interval)
-  {
-    previousMillis = currentMillis;
-
-    if (Firebase.ready())
-    {
-      if (Firebase.setInt(fbdo, "/data/2/humidity/" + currentDate, humidity))
-      {
-
-        Serial.println(fbdo.dataPath());
-
-        Serial.println(fbdo.pushName());
-
-        Serial.println(fbdo.dataPath() + "/" + fbdo.pushName());
-      }
-      else
-      {
-        Serial.println(fbdo.errorReason());
-      }
-      if (Firebase.setInt(fbdo, "/data/2/temperature/" + currentDate, temperature))
-      {
-
-        Serial.println(fbdo.dataPath());
-
-        Serial.println(fbdo.pushName());
-
-        Serial.println(fbdo.dataPath() + "/" + fbdo.pushName());
-      }
-      else
-      {
-        Serial.println(fbdo.errorReason());
-      }
-      if (Firebase.setInt(fbdo, "/data/2/soil/" + currentDate, soil))
-      {
-
-        Serial.println(fbdo.dataPath());
-
-        Serial.println(fbdo.pushName());
-
-        Serial.println(fbdo.dataPath() + "/" + fbdo.pushName());
-      }
-      else
-      {
-        Serial.println(fbdo.errorReason());
-      }
-
-      if (Firebase.setInt(fbdo, "/data/2/light/" + currentDate, ldr))
-      {
-
-        Serial.println(fbdo.dataPath());
-
-        Serial.println(fbdo.pushName());
-
-        Serial.println(fbdo.dataPath() + "/" + fbdo.pushName());
-      }
-      else
-      {
-        Serial.println(fbdo.errorReason());
-      }
-    }
-  }
-  if (Firebase.ready())
-  {
-    if (Firebase.setString(fbdo, "/param/2", paramAll))
-    {
-      Serial.println("T : " + String(temperature) + " | H: " + String(humidity) + " | S: " + String(soil) + " | L: " + String(ldr));
-      Serial.println(fbdo.dataPath());
-
-      Serial.println(fbdo.pushName());
-
-      Serial.println(fbdo.dataPath() + "/" + fbdo.pushName());
-    }
-    else
-    {
-      Serial.println(fbdo.errorReason());
-    }
-  }
+void loop() {
 }
